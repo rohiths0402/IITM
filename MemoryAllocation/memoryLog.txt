@@ -1,0 +1,30 @@
+---------Memory log---------
+[MALLOC ] Address = 000001d3a2591430, Size = 40 bytes
+[CALLOC ] Address = 000001d3a2596c90, Size = 15 bytes
+[MALLOC ] Address = 000001d3a2596ce0, Size = 80 bytes
+[FREE   ] Address = 000001d3a2591430, Size = 40 bytes
+[REALLOC] Address = 000001d3a2596ce0, Size = 80 bytes
+[FREE   ] Address = 000001d3a2596ce0, Size = 80 bytes
+[FREE UNTRACKED] Address = 000001d3a2596ce0, Size = 0 bytes
+[MALLOC ] Address = 000001d3a2596ce0, Size = 32 bytes
+
+--- Freed Memory Blocks ---
+Address: 000001d3a2596ce0, Size: 80 bytes
+Address: 000001d3a2596ce0, Size: 80 bytes
+Address: 000001d3a2591430, Size: 40 bytes
+
+-----Memory leak------
+Address: 000001d3a2596ce0, Size: 32 bytes
+Address: 000001d3a2596c90, Size: 15 bytes
+Total leaked memory: 47 bytes
+
+--- Active Allocations (Table) ---
+| Address           | Size (bytes) |
+|-------------------|--------------|
+| 1d3a2596ce0       | 32           |
+| 1d3a2596c90       | 15           |
+
+--- Active Allocations (Linked List) ---
+[Address: 000001d3a2596ce0 | Size: 32 bytes] -> [Address: 000001d3a2596c90 | Size: 15 bytes] -> NULL
+---------Memory log---------
+[MALLOC ] Address = 00000225dcba6c90, Size = 10 bytes

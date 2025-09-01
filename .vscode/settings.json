@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "lrucache.h": "c",
+        "filecache.h": "c"
+    },
+    "C_Cpp.errorSquiggles": "disabled"
+}
