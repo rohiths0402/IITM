@@ -9,6 +9,7 @@
 #include<errno.h>
 
 #pragma pack(push,1)
+
 typedef struct {
     uint32_t id;
     double value;
