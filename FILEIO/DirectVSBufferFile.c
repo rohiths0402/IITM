@@ -100,7 +100,7 @@ static void run_read_benchmark(const char *label, int fd, unsigned char *buf, si
 }
 
 int main(int argc, char **argv){
-    const char *file = "/destination.txt";
+    const char *file = "./destination.txt";
     size_t block_size = 4096;
     size_t total_mb = 64;
     int run_buffered = 1, run_direct = 1;

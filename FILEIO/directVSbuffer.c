@@ -38,13 +38,9 @@ static void fill_pattern(unsigned char *buffer, size_t length)
 static void benchmark_write(const char *label, int fd, unsigned char *buffer, size_t write_size, size_t iterations, int do_fsync)
 {
     struct timespec t0, t1;
-
     long long min_ns = (1LL << 62), max_ns = 0, sum_ns = 0;
-
     off_t offset = 0;
-
     printf("WRITE : %s : write-size = %zu, iterations = %zu, do_fsync = %d \n", label, write_size, iterations, do_fsync);
-
     for (size_t iterator = 0; iterator < iterations; ++iterator)
     {
         if(clock_gettime(CLOCK_MONOTONIC, &t0) < 0)
@@ -52,15 +48,12 @@ static void benchmark_write(const char *label, int fd, unsigned char *buffer, si
             perror("clock get time");
             exit(1);
         }
-
         size_t w = write(fd, buffer, write_size);
-
         if(w < 0)
         {
             perror("write");
             exit(1);
         }
-
         if((size_t)w != write_size)
         {
             fprintf(stderr, "short write %zd (expected %zu) \n", w, write_size);
@@ -75,7 +68,6 @@ static void benchmark_write(const char *label, int fd, unsigned char *buffer, si
                 exit(1);
             }
         }
-
         if(clock_gettime(CLOCK_MONOTONIC, &t1) < 0)
         {
             perror("clock get time");

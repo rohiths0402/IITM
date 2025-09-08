@@ -22,7 +22,7 @@ int main(int argc, char *argv[]) {
     }
     if(argc >= 3){ 
         filename = argv[2];
-    }
+    } 
     if(argc >= 4){
         write_size = (size_t)atoi(argv[3]);
     }
@@ -89,5 +89,4 @@ int main(int argc, char *argv[]) {
     free(buffer);
     close(fd);
     return 0;
-
 }
