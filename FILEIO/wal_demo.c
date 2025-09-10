@@ -103,10 +103,28 @@ void cmd_recover(){
 }
 
 void cmd_display(){
-    printf("\n--- WAL LOG ---\n");
-    system("cat wallog 2>/dev/null || echo '(empty)'");
-    printf("\n--- DB FILE ---\n");
-    system("cat dbtxt 2>/dev/null || echo '(empty)'");
+   printf("===== WAL LOG =====\n");
+    FILE *wal_fp = fopen(WAL_FILE, "r");
+    if (wal_fp)
+    {
+        char line[MAX_LINE_LEN];
+        while (fgets(line, sizeof(line), wal_fp))
+        {
+            printf("%s", line);
+        }
+        fclose(wal_fp);
+    }
+
+    printf("\n===== DB CONTENTS =====\n");
+    FILE *db_fp = fopen(DB_FILE, "r");
+    if (db_fp)
+    {
+        char line[MAX_LINE_LEN];
+        while (fgets(line, sizeof(line), db_fp))
+        {
+            printf("%s", line);
+        }
+        fclose(db_fp);
 }
 
 int main(int argc, char *argv[]){
