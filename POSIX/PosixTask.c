@@ -15,20 +15,19 @@ typedef struct{
     long count;
 }ThreadData;
 
-void* count_words(void *arg) {
+void* count_words(void *arg){
     ThreadData *data = (ThreadData*)arg;
     long count = 0;
     int in_word = 0;
-
-    for (long i = data->start; i < data->end; i++) {
-        if (isspace((unsigned char)data->buffer[i])) {
+    for(long i = data->start; i < data->end; i++){
+        if(isspace((unsigned char)data->buffer[i])){
             in_word = 0;
-        } else if (!in_word) {
+        } 
+        else if(!in_word){
             in_word = 1;
             count++;
         }
     }
-
     data->count = count;
     return NULL;
 }
@@ -48,11 +47,12 @@ char* loadFile(const char *filename){
         perror("file open");
         exit(1);
     }
-    char *buffer = malloc(filename);
-    if(buffer!= NULL){
+    char *buffer = malloc(filesize);
+    if (buffer == NULL) {
         perror("malloc allocation");
         exit(1);
     }
+
      if(read(fd, buffer, filesize) != filesize){
         perror("read");
         exit(1);
@@ -61,32 +61,31 @@ char* loadFile(const char *filename){
     return buffer;
 }
 
-void split_and_count(char *buffer, long filesize) {
+void split_and_count(char *buffer, long filesize){
     pthread_t threads[MAX_THREADS];
     ThreadData tdata[MAX_THREADS];
     long chunk_size = filesize / MAX_THREADS;
-    for (int i = 0; i < MAX_THREADS; i++) {
+    for(int i = 0; i < MAX_THREADS; i++){
         tdata[i].buffer = buffer;
         tdata[i].start = i * chunk_size;
         tdata[i].end = (i == MAX_THREADS - 1) ? filesize : (i + 1) * chunk_size;
-        if (i > 0) {
+        if (i > 0){
             while (tdata[i].start < filesize && 
-                   !isspace((unsigned char)buffer[tdata[i].start])) {
+                   !isspace((unsigned char)buffer[tdata[i].start])){
                 tdata[i].start++;
             }
         }
         pthread_create(&threads[i], NULL, count_words, &tdata[i]);
     }
     long total_count = 0;
-    for (int i = 0; i < MAX_THREADS; i++) {
+    for(int i = 0; i < MAX_THREADS; i++){
         pthread_join(threads[i], NULL);
         total_count += tdata[i].count;
     }
-
     printf("Total word count: %ld\n", total_count);
 }
 
-int main(){
+int main( int argc, char *argv[]){
     if(argc < 2){
         fprintf(stderr,"usagae:%ss <filename>\n",argv[0]);
     }
