@@ -1,0 +1,336 @@
+#define _GNU_SOURCE
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <linux/futex.h>
+#include <sys/syscall.h>
+#include <sys/time.h>
+#include <stdatomic.h>
+#include <string.h>
+#include <time.h>
+#include <stdarg.h>
+
+#define MAX_WORKERS 8
+#define SPIN_COUNT 1000
+#define LOG_BUFFER_SIZE 256
+
+// Logging levels
+typedef enum {
+    LOG_DEBUG = 0,
+    LOG_INFO,
+    LOG_WARN,
+    LOG_ERROR
+} log_level_t;
+
+// Latch structure for one-time synchronization
+typedef struct {
+    atomic_int count;
+    atomic_int futex_var;
+} latch_t;
+
+// Shared work structure
+typedef struct {
+    atomic_int shared_counter;
+    atomic_int work_done;
+    latch_t start_latch;
+    latch_t completion_latch;
+    atomic_int active_workers;
+    pthread_mutex_t log_mutex;
+} shared_work_t;
+
+// Worker thread data
+typedef struct {
+    int worker_id;
+    shared_work_t *shared;
+    int work_iterations;
+} worker_data_t;
+
+// Enhanced logging with thread safety
+static void log_message(shared_work_t *shared, log_level_t level, const char *format, ...) {
+    const char *level_str[] = {"DEBUG", "INFO", "WARN", "ERROR"};
+    char buffer[LOG_BUFFER_SIZE];
+    char timestamp[64];
+    struct timespec ts;
+    va_list args;
+    
+    // Get timestamp
+    clock_gettime(CLOCK_REALTIME, &ts);
+    struct tm *tm_info = localtime(&ts.tv_sec);
+    snprintf(timestamp, sizeof(timestamp), "%02d:%02d:%02d.%03ld",
+             tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec, ts.tv_nsec / 1000000);
+    
+    va_start(args, format);
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+    
+    if (shared) {
+        pthread_mutex_lock(&shared->log_mutex);
+    }
+    printf("[%s][%s][TID:%lu] %s\n", timestamp, level_str[level], pthread_self(), buffer);
+    fflush(stdout);
+    if (shared) {
+        pthread_mutex_unlock(&shared->log_mutex);
+    }
+}
+
+// Futex wrapper functions with enhanced error handling
+static int futex_wait_enhanced(atomic_int *address, int expected, const char *context) {
+    int ret = syscall(SYS_futex, (int *)address, FUTEX_WAIT | FUTEX_PRIVATE_FLAG, expected, NULL, NULL, 0);
+    if (ret == -1) {
+        switch (errno) {
+            case EAGAIN:
+                // Value changed before wait - this is normal
+                break;
+            case EINTR:
+                // Interrupted by signal - this is normal
+                break;
+            default:
+                perror(context);
+                break;
+        }
+    }
+    return ret;
+}
+
+static int futex_wake_enhanced(atomic_int *address, int number, const char *context) {
+    int ret = syscall(SYS_futex, (int *)address, FUTEX_WAKE | FUTEX_PRIVATE_FLAG, number, NULL, NULL, 0);
+    if (ret == -1) {
+        perror(context);
+    }
+    return ret;
+}
+
+// Compare-And-Swap wrapper with retry logic
+static bool cas_with_spin(atomic_int *target, int expected, int desired, int max_spins) {
+    for (int i = 0; i < max_spins; i++) {
+        if (atomic_compare_exchange_weak_explicit(target, &expected, desired,
+                                                 memory_order_acq_rel, memory_order_acquire)) {
+            return true;
+        }
+        // Brief pause to reduce CPU contention
+        for (volatile int j = 0; j < 10; j++);
+        
+        // Reload expected value for next attempt
+        expected = atomic_load_explicit(target, memory_order_acquire);
+    }
+    return false;
+}
+
+// Spin-wait with backoff
+static void spin_wait_with_backoff(atomic_int *address, int expected_value, int max_spins) {
+    for (int i = 0; i < max_spins; i++) {
+        if (atomic_load_explicit(address, memory_order_acquire) != expected_value) {
+            return;
+        }
+        
+        // Exponential backoff
+        int backoff = 1 << (i / 100);  // Increase delay every 100 iterations
+        if (backoff > 1000) backoff = 1000;  // Cap the backoff
+        
+        for (volatile int j = 0; j < backoff; j++);
+    }
+}
+
+// Latch initialization
+static void latch_init(latch_t *latch, int count) {
+    atomic_init(&latch->count, count);
+    atomic_init(&latch->futex_var, 0);
+}
+
+// Latch count down (called by workers when they complete)
+static void latch_count_down(latch_t *latch, shared_work_t *shared) {
+    int old_count = atomic_fetch_sub_explicit(&latch->count, 1, memory_order_acq_rel);
+    
+    log_message(shared, LOG_DEBUG, "Latch count down: %d -> %d", old_count, old_count - 1);
+    
+    if (old_count == 1) {  // We were the last one
+        // Signal all waiters
+        atomic_store_explicit(&latch->futex_var, 1, memory_order_release);
+        int woken = futex_wake_enhanced(&latch->futex_var, INT_MAX, "latch_count_down futex_wake");
+        log_message(shared, LOG_INFO, "Latch released, woke %d waiters", woken);
+    }
+}
+
+// Latch wait (called by threads waiting for completion)
+static void latch_wait(latch_t *latch, shared_work_t *shared) {
+    log_message(shared, LOG_DEBUG, "Waiting on latch...");
+    
+    // First, try spinning for a short time
+    spin_wait_with_backoff(&latch->futex_var, 0, SPIN_COUNT);
+    
+    // If still not ready, use futex
+    while (atomic_load_explicit(&latch->futex_var, memory_order_acquire) == 0) {
+        int ret = futex_wait_enhanced(&latch->futex_var, 0, "latch_wait futex_wait");
+        
+        if (ret == -1 && errno != EAGAIN && errno != EINTR) {
+            log_message(shared, LOG_ERROR, "Latch wait failed");
+            return;
+        }
+    }
+    
+    log_message(shared, LOG_DEBUG, "Latch wait completed");
+}
+
+// Worker thread function
+void *worker_thread(void *arg) {
+    worker_data_t *data = (worker_data_t *)arg;
+    shared_work_t *shared = data->shared;
+    
+    log_message(shared, LOG_INFO, "Worker %d starting", data->worker_id);
+    
+    // Wait for start signal
+    latch_wait(&shared->start_latch, shared);
+    
+    log_message(shared, LOG_INFO, "Worker %d beginning work", data->worker_id);
+    
+    // Perform work with CAS operations
+    for (int i = 0; i < data->work_iterations; i++) {
+        // Simulate some work
+        usleep(1000 + (data->worker_id * 100));  // Vary work time per worker
+        
+        // Atomically increment shared counter using CAS with retry
+        int old_val, new_val;
+        do {
+            old_val = atomic_load_explicit(&shared->shared_counter, memory_order_acquire);
+            new_val = old_val + 1;
+        } while (!cas_with_spin(&shared->shared_counter, old_val, new_val, 10));
+        
+        if (i % 5 == 0) {  // Log every 5th iteration
+            log_message(shared, LOG_DEBUG, "Worker %d completed iteration %d, counter now %d", 
+                       data->worker_id, i + 1, new_val);
+        }
+    }
+    
+    // Mark work as done
+    int done_count = atomic_fetch_add_explicit(&shared->work_done, 1, memory_order_acq_rel) + 1;
+    log_message(shared, LOG_INFO, "Worker %d completed all work (%d workers done)", 
+               data->worker_id, done_count);
+    
+    // Signal completion
+    latch_count_down(&shared->completion_latch, shared);
+    
+    return NULL;
+}
+
+// Coordinator thread - manages the workers
+void *coordinator_thread(void *arg) {
+    shared_work_t *shared = (shared_work_t *)arg;
+    
+    log_message(shared, LOG_INFO, "Coordinator starting, sleeping for 2 seconds before releasing workers");
+    sleep(2);
+    
+    // Release all workers to start
+    latch_count_down(&shared->start_latch, shared);
+    
+    log_message(shared, LOG_INFO, "Coordinator released workers to begin");
+    
+    // Wait for all workers to complete
+    latch_wait(&shared->completion_latch, shared);
+    
+    log_message(shared, LOG_INFO, "Coordinator detected all workers completed");
+    
+    return NULL;
+}
+
+// Monitor thread - periodically reports status
+void *monitor_thread(void *arg) {
+    shared_work_t *shared = (shared_work_t *)arg;
+    
+    log_message(shared, LOG_INFO, "Monitor thread starting");
+    
+    // Monitor until all work is done
+    while (atomic_load_explicit(&shared->work_done, memory_order_acquire) < MAX_WORKERS) {
+        int counter_val = atomic_load_explicit(&shared->shared_counter, memory_order_acquire);
+        int done_count = atomic_load_explicit(&shared->work_done, memory_order_acquire);
+        
+        log_message(shared, LOG_INFO, "Status: Counter=%d, Workers_completed=%d/%d", 
+                   counter_val, done_count, MAX_WORKERS);
+        
+        sleep(1);
+    }
+    
+    log_message(shared, LOG_INFO, "Monitor thread shutting down");
+    return NULL;
+}
+
+int main(void) {
+    pthread_t workers[MAX_WORKERS];
+    pthread_t coordinator, monitor;
+    worker_data_t worker_data[MAX_WORKERS];
+    shared_work_t shared_work;
+    
+    // Initialize shared work structure
+    atomic_init(&shared_work.shared_counter, 0);
+    atomic_init(&shared_work.work_done, 0);
+    atomic_init(&shared_work.active_workers, MAX_WORKERS);
+    
+    // Initialize latches
+    latch_init(&shared_work.start_latch, 1);  // Coordinator will count down
+    latch_init(&shared_work.completion_latch, MAX_WORKERS);  // Each worker will count down
+    
+    // Initialize mutex
+    if (pthread_mutex_init(&shared_work.log_mutex, NULL) != 0) {
+        perror("pthread_mutex_init");
+        exit(EXIT_FAILURE);
+    }
+    
+    log_message(&shared_work, LOG_INFO, "=== Enhanced Futex Demo with %d Workers ===", MAX_WORKERS);
+    
+    // Create worker threads
+    for (int i = 0; i < MAX_WORKERS; i++) {
+        worker_data[i].worker_id = i;
+        worker_data[i].shared = &shared_work;
+        worker_data[i].work_iterations = 10 + (i * 2);  // Vary work per worker
+        
+        if (pthread_create(&workers[i], NULL, worker_thread, &worker_data[i]) != 0) {
+            perror("pthread_create worker");
+            exit(EXIT_FAILURE);
+        }
+    }
+    
+    // Create coordinator thread
+    if (pthread_create(&coordinator, NULL, coordinator_thread, &shared_work) != 0) {
+        perror("pthread_create coordinator");
+        exit(EXIT_FAILURE);
+    }
+    
+    // Create monitor thread
+    if (pthread_create(&monitor, NULL, monitor_thread, &shared_work) != 0) {
+        perror("pthread_create monitor");
+        exit(EXIT_FAILURE);
+    }
+    
+    // Wait for all threads to complete
+    log_message(&shared_work, LOG_INFO, "Main thread waiting for completion...");
+    
+    for (int i = 0; i < MAX_WORKERS; i++) {
+        if (pthread_join(workers[i], NULL) != 0) {
+            perror("pthread_join worker");
+        }
+    }
+    
+    if (pthread_join(coordinator, NULL) != 0) {
+        perror("pthread_join coordinator");
+    }
+    
+    if (pthread_join(monitor, NULL) != 0) {
+        perror("pthread_join monitor");
+    }
+    
+    // Final results
+    int final_counter = atomic_load_explicit(&shared_work.shared_counter, memory_order_acquire);
+    int final_done = atomic_load_explicit(&shared_work.work_done, memory_order_acquire);
+    
+    log_message(&shared_work, LOG_INFO, "=== FINAL RESULTS ===");
+    log_message(&shared_work, LOG_INFO, "Shared counter final value: %d", final_counter);
+    log_message(&shared_work, LOG_INFO, "Workers completed: %d/%d", final_done, MAX_WORKERS);
+    log_message(&shared_work, LOG_INFO, "Expected counter value: %d", (10 + 12 + 14 + 16 + 18 + 20 + 22 + 24)); 
+    
+
+    pthread_mutex_destroy(&shared_work.log_mutex);
+    log_message(NULL, LOG_INFO, "Program completed successfully");
+    return 0;
+}
