@@ -249,7 +249,6 @@ int main(){
     for(int i = 0; i < MAX_THREADS; i++){
         pthread_join(threads[i], NULL);
     }
-
     console_demo();
     print_logs();
     return 0;
