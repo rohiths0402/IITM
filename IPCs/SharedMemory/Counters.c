@@ -2,58 +2,70 @@
 #include <stdlib.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
+#include <sys/sem.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
-#define NUM_WORKERS 4
-#define INCREMENTS_PER_WORKER 100000
+#define MAX_WORKERS 10
+
+union semun{
+    int val;
+    struct semid_ds *buf;
+    unsigned short *array;
+};
+
+void lock(int semid){
+    struct sembuf op ={0, -1, 0};
+    semop(semid, &op, 1);
+}
+
+void unlock(int semid){
+    struct sembuf op ={0, 1, 0};
+    semop(semid, &op, 1);
+}
 
 int main(){
-    key_t key = ftok("sysv_shared_counter.c", 'A');
-    if(key == -1){
-        perror("ftok");
+    int num_workers, increments;
+    printf("Enter number of workers(1–%d): ", MAX_WORKERS);
+    scanf("%d", &num_workers);
+    if(num_workers <= 0 || num_workers > MAX_WORKERS){
+        fprintf(stderr, "Invalid number of workers.\n");
         exit(EXIT_FAILURE);
     }
-    int shm_id = shmget(key, sizeof(int) * NUM_WORKERS, IPC_CREAT | 0666);
-    if(shm_id == -1){
-        perror("shmget");
+    printf("Enter number of increments per worker: ");
+    scanf("%d", &increments);
+    if(increments <= 0){
+        fprintf(stderr, "Invalid number of increments.\n");
         exit(EXIT_FAILURE);
     }
-    int *counters =(int *)shmat(shm_id, NULL, 0);
-    if(counters ==(void *)-1){
-        perror("shmat");
-        exit(EXIT_FAILURE);
-    }
-    for(int i = 0; i < NUM_WORKERS; i++){
-        counters[i] = 0;
-    }
-    for(int i = 0; i < NUM_WORKERS; i++){
-        int worker_id = i; 
+    key_t shm_key = ftok(".", 'M');
+    key_t sem_key = ftok(".", 'S');
+    int shm_id = shmget(shm_key, sizeof(int), IPC_CREAT | 0666);
+    int *shared_total =(int *)shmat(shm_id, NULL, 0);
+    *shared_total = 0;
+    int sem_id = semget(sem_key, 1, IPC_CREAT | 0666);
+    union semun sem_arg;
+    sem_arg.val = 1;
+    semctl(sem_id, 0, SETVAL, sem_arg);
+    for(int i = 0; i < num_workers; i++){
         pid_t pid = fork();
         if(pid == 0){
-            for(int j = 0; j < INCREMENTS_PER_WORKER; j++){
-                counters[worker_id]++;
+            for(int j = 0; j < increments; j++){
+                lock(sem_id);
+               (*shared_total)++;
+                unlock(sem_id);
             }
-            shmdt(counters);
+            shmdt(shared_total);
             exit(0);
-        } else if(pid < 0){
-            perror("fork");
-            exit(EXIT_FAILURE);
         }
     }
-
-    for(int i = 0; i < NUM_WORKERS; i++){
+    for(int i = 0; i < num_workers; i++){
         wait(NULL);
     }
-    int total = 0;
-    for(int i = 0; i < NUM_WORKERS; i++){
-        printf("Worker %d counter: %d\n", i, counters[i]);
-        total += counters[i];
-    }
-    printf("Total count: %d\n", total);
-
-    shmdt(counters);
+    printf("Final shared total: %d\n", *shared_total);
+    shmdt(shared_total);
     shmctl(shm_id, IPC_RMID, NULL);
+    semctl(sem_id, 0, IPC_RMID);
 
     return 0;
 }
