@@ -107,7 +107,7 @@ int main() {
            
 
         close(client_fd);
-        close(server_fd);
+        close(server_fd);  
     }
 
     return 0;
