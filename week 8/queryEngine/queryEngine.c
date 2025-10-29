@@ -79,7 +79,7 @@ void limit_close(){
 }
 
 void projection_open(){
-    printf("Projection opened!(Name and Age)\n");
+    printf("Projection opened(Name and Age)\n");
     limit_open();
 
 }
@@ -94,7 +94,7 @@ void projection_next(){
 }
 
 void projection_close(){
-    printf("Projection closed!\n");
+    printf("Projection closed\n");
     limit_close();
 }
 
